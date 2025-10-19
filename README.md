@@ -5,26 +5,36 @@ Access Kraken's WebSocket API v2 for real-time market information and trading da
 ## Quick Start
 
 1. **Initialize** the WebSocket client
-2. **Create** a message handler using the decorator
+2. **Create** trigger functions using the decorator
 3. **Run** with your desired subscriptions
 
 ```python
 import asyncio
-from kraken_ws.api import KrakenWebSocketAPI
-from schema.market_data_subscriptions import TickerSubscriptionMessage
+from kraken_sockets.api import KrakenWebSocketAPI
+from schema.responses import TickerUpdateResponse, TradesUpdateResponse
+from schema.requests.market_data_requests import TickerSubscriptionRequest, TradesSubscriptionRequest
 
 async def main():
     # 1. Initialize
-    kraken_ws = KrakenWebSocketAPI()
+    kraken = KrakenWebSocketAPI()
 
-    # 2. Wrap your handler
-    @kraken_ws.message_handler
-    async def my_handler(message: dict) -> None:
-        print(message)
+    # 2. Set trigger functions for specific response types
+    @kraken.trigger(TickerUpdateResponse)
+    async def ticker_handler(response: TickerUpdateResponse) -> None:
+        kraken.log(f"Last price: ${response.last}", "info")
 
-    # 3. Run with subscriptions, alternatively you can call .subscribe() during your own execution
-    subscriptions = [TickerSubscriptionMessage(["BTC/USD", "ETH/USD"])]
-    await kraken_ws.run(subscriptions=subscriptions)
+    @kraken.trigger(TradesUpdateResponse)
+    async def trades_handler(response: TradesUpdateResponse) -> None:
+        for trade in response.trades:
+            kraken.log(f"{trade.side} {trade.price} @ {trade.qty}", "info")
+
+    # 3. Run with subscriptions
+    subscriptions = [
+        TickerSubscriptionRequest(["BTC/USD", "ETH/USD"]),
+        TradesSubscriptionRequest(["BTC/USD"])
+    ]
+
+    await kraken.run(subscriptions)
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -32,20 +42,45 @@ if __name__ == "__main__":
 
 ## How It Works
 
-The `example.py` demonstrates the three-step process:
+The trigger decorator system allows you to:
 
 1. **Initialize**: Create a `KrakenWebSocketAPI` instance
-2. **Handler**: Use `@kraken_ws.message_handler` decorator on your async function to process incoming messages.
-3. **Run**: Call `await kraken_ws.run(subscriptions=[...])` to connect and start receiving data
+2. **Triggers**: Use `@kraken.trigger(ResponseType)` to register functions that execute when specific message types arrive
+3. **Subscribe**: Choose which channels to subscribe to using request schemas
+4. **Run**: Call `await kraken.run(subscriptions)` to connect and start the async loop
 
-Your handler function receives a pre parsed JSON -> python dictionary. See Kraken docs for the response schema.
+Each trigger function receives a parsed response object matching the specified schema type.
 
-## Message Structure
+## Available Decorators
 
-For complete documentation on message formats and available subscriptions, see the [Kraken WebSocket API v2 docs](https://docs.kraken.com/api/docs/websocket-v2/add_order).
+- `@kraken.trigger(ResponseType)` - Execute function when specific response type is received
+- `@kraken.user_logger` - Register custom logging handler
+- `@kraken.user_task` - Add custom tasks to the async loop
+
+**Admin Responses:**
+- `HeartbeatResponse`, `PingResponse`, `StatusResponse`
+
+**Market Data Responses:**
+- `BookSnapshotResponse`, `BookUpdateResponse`
+- `TickerSnapshotResponse`, `TickerUpdateResponse`
+- `TradesSnapshotResponse`, `TradesUpdateResponse`
+- `OHLCSnapshotResponse`, `OHLCUpdateResponse`
+- `InstrumentsSnapshotResponse`, `InstrumentsUpdateResponse`
+- `OrderSnapshotResponse`, `OrderUpdateResponse`
+
+**Subscription Responses:**
+- `SubscriptionResponse`, `UnsubscribeResponse`
+
+## Request Schemas
+
+Request schemas are in `schema.requests`:
+- Market data: `TickerSubscriptionRequest`, `TradesSubscriptionRequest`, `BookSubscriptionRequest`, etc.
+- User data: `OrdersSubscriptionRequest`, `BalancesSubscriptionRequest`, `ExecutionSubscriptionRequest`
 
 ## Private Endpoints
 
-For authenticated endpoints, set environment variables by replacing .env.example with your .env with keys.:
+For authenticated endpoints, set environment variables:
 - `KRAKEN_REST_API_KEY`
 - `KRAKEN_REST_API_PRIVATE_KEY`
+
+For complete API documentation, see [Kraken WebSocket API v2 docs](https://docs.kraken.com/api/docs/websocket-v2/).
