@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import Literal
 
-from schema.responses.base_responses import Response
+from kraken_sockets.schema.responses.base_responses import Response
 
 
 class HeartbeatResponse(Response):
@@ -12,7 +12,7 @@ class HeartbeatResponse(Response):
     Channel 'heartbeat' sends out a constant response approx 1 per second in the
     absence of any other channel updates.
 
-    Docs @ https://docs.kraken.com/api/docs/websocket-v2/heartbeat
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/heartbeat#update-response
     """
     time_received: str
 
@@ -24,15 +24,15 @@ class PingResponse(Response):
     """
     Response following a ping request.
 
-    Docs @ https://docs.kraken.com/api/docs/websocket-v2/ping
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/ping#response
 
     Attr:
-        time_sent (int): UNIX ns timestamp for when request was sent to server.
+        time_sent (int): UNIX microsecond timestamp for when request was sent to server.
         time_in (str): Timestamp when request was recieved on the wire, prior to parsing data.
             e.g. 2022-12-25T09:30:59.123456Z. Format - RFC3339 - https://datatracker.ietf.org/doc/html/rfc3339
         time_out (str): Timestamp when response was sent on the wire, prior to transmitting data.
             e.g. 2022-12-25T09:30:59.123456Z. Format - RFC3339 - https://datatracker.ietf.org/doc/html/rfc3339
-        time_recieved(int): UNIX ns timestamp for when request was recieved back from server.
+        time_recieved (int): UNIX microsecond timestamp for when request was recieved back from server.
 
     """
     time_sent: int
@@ -61,7 +61,7 @@ class StatusResponse(Response):
     """
     Provides mechanism to verify exchange status and successful initial connection.
 
-    Docs @ https://docs.kraken.com/api/docs/websocket-v2/status
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/status#update-response
 
     Arg:
         data (dict): contains exchange status and connection info.

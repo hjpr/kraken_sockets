@@ -1,7 +1,7 @@
 
 import json
+import time
 
-from datetime import datetime, timezone
 from typing import Optional
 from websockets import ClientConnection
 
@@ -20,7 +20,6 @@ class PingRequest:
     async def send(self, req_id: Optional[int] = None) -> None:
         request = {
             "method": "ping",
-            "req_id": req_id
+            "req_id": req_id if req_id is not None else time.time_ns() // 1000
         }
-        request = {k: v for k, v in request.items() if v is not None}
         await self.socket.send(json.dumps(request))

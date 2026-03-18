@@ -1,5 +1,5 @@
 
-from schema.requests.base_requests import SubscriptionRequest
+from kraken_sockets.schema.requests.base_requests import SubscriptionRequest, UnsubscribeRequest
 from typing import Literal, Optional
 
 
@@ -8,7 +8,7 @@ class BalancesSubscriptionRequest(SubscriptionRequest):
     Build subscription message to private 'balances' channel which streams client asset
     balances and transactions from the account ledger.
 
-    Docs @ https://docs.kraken.com/api/docs/websocket-v2/balances
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/balances#subscribe-request
 
     Args:
         snapshot (bool): Request a snapshot after subscribing.
@@ -39,7 +39,7 @@ class BalancesSubscriptionRequest(SubscriptionRequest):
         },
         self.req_id = req_id,
         self.rebased = rebased,
-        self.users = users             
+        self.users = users       
 
 
 class ExecutionSubscriptionRequest(SubscriptionRequest):
@@ -47,7 +47,7 @@ class ExecutionSubscriptionRequest(SubscriptionRequest):
     Build subscription message to private 'executions' channel which streams order status
     and execution events for the account.
 
-    Docs @ https://docs.kraken.com/api/docs/websocket-v2/executions
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/executions#subscribe-request
 
     Args:
         snap_trades (bool): If true, the last 50 orders will be included in snapshot.
@@ -91,5 +91,55 @@ class ExecutionSubscriptionRequest(SubscriptionRequest):
             "rebased": rebased,
             "ratecounter": ratecounter,
             "users": users,
+        }
+        self.req_id = req_id
+
+
+class BalancesUnsubscribeRequest(UnsubscribeRequest):
+    """
+    Build unsubscribe message to private 'balances' channel.
+
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/balances#unsubscribe-request
+
+    Args:
+        token (str): Session authentication token required for private channels.
+        req_id (int): Optional client originated request identifier sent as ack in response.
+    """
+
+    def __init__(
+            self,
+            token: str,
+            req_id: Optional[int] = None
+            ):
+        super().__init__()
+        self.public = False
+        self.params = {
+            "channel": "balances",
+            "token": token,
+        }
+        self.req_id = req_id      
+
+
+class ExecutionUnsubscribeRequest(UnsubscribeRequest):
+    """
+    Build unsubscribe message to private 'executions' channel.
+
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/executions#unsubscribe-request
+
+    Args:
+        token (str): Session authentication token required for private channels.
+        req_id (int): Optional client originated request identifier sent as ack in response.
+    """
+
+    def __init__(
+            self,
+            token: str,
+            req_id: Optional[int] = None
+            ):
+        super().__init__()
+        self.public = False
+        self.params = {
+            "channel": "executions",
+            "token": token,
         }
         self.req_id = req_id

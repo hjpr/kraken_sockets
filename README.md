@@ -1,85 +1,214 @@
 # kraken-sockets
 
-Access Kraken's WebSocket API v2 for real-time market information and trading data.
+---
+
+Access Kraken's WebSocket API v2 for real-time market information and trading data. Kraken-sockets is intended to be used in conjunction with the REST API
+client along with an LLM agent to create a fully featured trading bot. Organization and naming scheme for responses/requests follows Kraken API structure.
+
+https://docs.kraken.com/api/docs/websocket-v2/add_order
+
+---
 
 ## Quick Start
 
-1. **Initialize** the WebSocket client
-2. **Create** trigger functions using the decorator
-3. **Run** with your desired subscriptions
-
 ```python
 import asyncio
-from kraken_sockets.api import KrakenWebSocketAPI
-from schema.responses import TickerUpdateResponse, TradesUpdateResponse
-from schema.requests.market_data_requests import TickerSubscriptionRequest, TradesSubscriptionRequest
 
 async def main():
-    # 1. Initialize
+
+    # 1. Initialize the websocket client.
+    from kraken_sockets.api import KrakenWebSocketAPI
     kraken = KrakenWebSocketAPI()
 
-    # 2. Set trigger functions for specific response types
+    # 2. Decide which channels to listen to.
+    from kraken_sockets.schema.requests.market_data_requests import (
+        TickerSubscriptionRequest,
+        TradesSubscriptionRequest,
+        OHLCSubscriptionRequest
+    )
+    subscriptions = [
+        TickerSubscriptionRequest(["ETH/USD"]),
+        TradesSubscriptionRequest(["BTC/USD"]),
+        OHLCSubscriptionRequest(["ETH/USD"], 1)
+    ]
+
+    # 3. Use the decorator to handle those channel messages as they are broadcast
+    from kraken_sockets.schema.responses import (
+        TickerUpdateResponse,
+        TradesUpdateResponse,
+        OHLCUpdateResponse
+    )
     @kraken.trigger(TickerUpdateResponse)
     async def ticker_handler(response: TickerUpdateResponse) -> None:
-        kraken.log(f"Last price: ${response.last}", "info")
+        kraken.log(f"Last price {response.symbol}: ${response.last}", "info")
 
     @kraken.trigger(TradesUpdateResponse)
     async def trades_handler(response: TradesUpdateResponse) -> None:
         for trade in response.trades:
-            kraken.log(f"{trade.side} {trade.price} @ {trade.qty}", "info")
+            kraken.log(f"{trade.symbol} {trade.side.upper()} {trade.price} @ {trade.qty}", "info")
 
-    # 3. Run with subscriptions
-    subscriptions = [
-        TickerSubscriptionRequest(["BTC/USD", "ETH/USD"]),
-        TradesSubscriptionRequest(["BTC/USD"])
-    ]
-
+    @kraken.trigger(OHLCUpdateResponse)
+    async def ohlc_handler(response: OHLCUpdateResponse) -> None:
+        kraken.log(f"{response.timestamp} - {response.candles}", "info")
+    
+    # 4. Run the async listener loop for those subscriptions
     await kraken.run(subscriptions)
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## How It Works
+---
 
-The trigger decorator system allows you to:
+## Available Subscriptions
 
-1. **Initialize**: Create a `KrakenWebSocketAPI` instance
-2. **Triggers**: Use `@kraken.trigger(ResponseType)` to register functions that execute when specific message types arrive
-3. **Subscribe**: Choose which channels to subscribe to using request schemas
-4. **Run**: Call `await kraken.run(subscriptions)` to connect and start the async loop
+Subscribe to an available channel to listen for responses on that channel. Typically channels broadcast a response each time an update occurs on that channel, and for many channels can optionally specify broadcasting a snapshot when channel is subscribed to to recieve an immediate update.
 
-Each trigger function receives a parsed response object matching the specified schema type.
+#### Admin
+
+`kraken_sockets.schema.requests.admin_requests`
+
+- `PingRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/ping/
+
+#### Market Data
+
+`kraken_sockets.schema.requests.market_data_requests`
+
+- `TickerSubscriptionRequest`
+
+- `TickerUnsubscribeRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/ticker/
+
+- `BookSubscriptionRequest`
+
+- `BookUnsubscribeRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/book/
+
+- `OHLCSubscriptionRequest`
+
+- `OHLCUnsubscribeRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/ohlc/
+
+- `TradesSubscriptionRequest`
+
+- `TradesUnsubscribeRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/trade/
+
+- `InstrumentSubscriptionRequest`
+
+- `InstrumentUnsubscribeRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/instrument/
+
+- `OrdersSubscriptionRequest`
+
+- `OrdersUnsubscribeRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/level3/
+
+#### User Data
+
+`kraken_sockets.schema.requests.user_data_requests`
+
+- `BalancesSubscriptionRequest`
+
+- `BalancesUnsubscribeRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/balances/
+
+- `ExecutionSubscriptionRequest`
+
+- `ExecutionUnsubscribeRequest`
+  
+  - https://docs.kraken.com/api/docs/websocket-v2/executions
+
+---
+
+## Available Responses
+
+#### Admin
+
+- `HeartbeatResponse`
+- `PingResponse`
+- `StatusResponse`
+
+#### Market Data
+
+- Book
+  
+  - `BookSnapshotResponse`
+  
+  - `BookUpdateResponse`
+
+- Ticker
+  
+  - `TickerSnapshotResponse`
+  
+  - `TickerUpdateResponse`
+
+- Trades
+  
+  - `TradesSnapshotResponse` 
+  
+  - `TradesUpdateResponse`
+
+- OHLC
+  
+  - `OHLCSnapshotResponse`
+  
+  - `OHLCUpdateResponse`
+
+- Instruments
+  
+  - `InstrumentsSnapshotResponse`
+  
+  - `InstrumentsUpdateResponse`
+
+- Order
+  
+  - `OrderSnapshotResponse`
+  
+  - `OrderUpdateResponse`
+
+#### Subscription
+
+- `SubscriptionResponse`
+- `UnsubscribeResponse`
+
+---
 
 ## Available Decorators
 
-- `@kraken.trigger(ResponseType)` - Execute function when specific response type is received
-- `@kraken.user_logger` - Register custom logging handler
-- `@kraken.user_task` - Add custom tasks to the async loop
+Wrap a function in decorators so that it will be registered in the async loop and conditionally fire depending on the behavior of the decorator.
 
-**Admin Responses:**
-- `HeartbeatResponse`, `PingResponse`, `StatusResponse`
+#### Trigger
 
-**Market Data Responses:**
-- `BookSnapshotResponse`, `BookUpdateResponse`
-- `TickerSnapshotResponse`, `TickerUpdateResponse`
-- `TradesSnapshotResponse`, `TradesUpdateResponse`
-- `OHLCSnapshotResponse`, `OHLCUpdateResponse`
-- `InstrumentsSnapshotResponse`, `InstrumentsUpdateResponse`
-- `OrderSnapshotResponse`, `OrderUpdateResponse`
+`@kraken.trigger(ResponseType)`
 
-**Subscription Responses:**
-- `SubscriptionResponse`, `UnsubscribeResponse`
+- Execute function when specific response type is received. Check the response types above for a list of available
 
-## Request Schemas
+#### Logger
 
-Request schemas are in `schema.requests`:
-- Market data: `TickerSubscriptionRequest`, `TradesSubscriptionRequest`, `BookSubscriptionRequest`, etc.
-- User data: `OrdersSubscriptionRequest`, `BalancesSubscriptionRequest`, `ExecutionSubscriptionRequest`
+`@kraken.user_logger`
+
+- Register a custom logging handler. Wrapped function recieves the
+
+#### Custom tasks
+
+`@kraken.user_task`
+
+- Add function as a custom task to the async loop. These tasks will be run with each loop. Control the execution using your own logic.
 
 ## Private Endpoints
 
 For authenticated endpoints, set environment variables:
+
 - `KRAKEN_REST_API_KEY`
 - `KRAKEN_REST_API_PRIVATE_KEY`
 

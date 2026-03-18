@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from schema.responses.base_responses import (
+from kraken_sockets.schema.responses.base_responses import (
     SnapshotResponse,
     UpdateResponse
 )

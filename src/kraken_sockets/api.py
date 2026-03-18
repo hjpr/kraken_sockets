@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 from loguru import logger
 from typing import Callable, Dict, List
 
-from schema.requests import (
+from kraken_sockets.controls import ControlServer
+from kraken_sockets.schema.requests import (
     BalancesSubscriptionRequest,
     BookSubscriptionRequest,
     ExecutionSubscriptionRequest,
@@ -22,9 +23,10 @@ from schema.requests import (
     OHLCSubscriptionRequest,
     OrdersSubscriptionRequest,
     PingRequest,
-    SubscriptionRequest
+    SubscriptionRequest,
+    UnsubscribeRequest,
 )
-from schema.responses import (
+from kraken_sockets.schema.responses import (
 
     # Admin responses
     Response,
@@ -33,7 +35,6 @@ from schema.responses import (
     StatusResponse,
 
     # Snapshot responses
-    SnapshotResponse,
     BookSnapshotResponse,
     InstrumentsSnapshotResponse,
     OHLCSnapshotResponse,
@@ -46,7 +47,6 @@ from schema.responses import (
     UnsubscribeResponse,
 
     # Update responses
-    UpdateResponse,
     BookUpdateResponse,
     InstrumentsUpdateResponse,
     OHLCUpdateResponse,
@@ -116,8 +116,10 @@ class KrakenWebSocketAPI:
     available_channels: set
     websocket_public: websockets.ClientConnection
     websocket_private: websockets.ClientConnection
-    
+
+    _token: str
     _message_queue: asyncio.Queue
+    command_queue: asyncio.Queue
     _user_handler: Callable | None
     _user_log_handler: Callable | None
     _user_triggers: Dict[Response, Callable]
@@ -125,7 +127,9 @@ class KrakenWebSocketAPI:
 
     def __init__(self):
         self.available_channels: set = set({})
+        self._token: str = ""
         self._message_queue = asyncio.Queue()
+        self.command_queue = asyncio.Queue()
         self._user_triggers: Dict[Response, Callable] = {}
         self._user_handler: Callable | None = None
         self._user_log_handler: Callable | None = None
@@ -140,7 +144,7 @@ class KrakenWebSocketAPI:
                 message = await socket.recv()
                 await self._message_queue.put(message)
             except websockets.exceptions.ConnectionClosed:
-                print(f"Connection to {name} websocket closed.")
+                self.log(f"Connection to {name} websocket closed.", "warning")
                 break
 
     async def _process_messages(self):
@@ -154,7 +158,7 @@ class KrakenWebSocketAPI:
 
             # Retrieve message details to determine how to handle
             method = message.get("method")
-            if method == "subscribe":
+            if method in ("subscribe", "unsubscribe"):
                 channel = message.get("result", {}).get("channel")
             else:
                 channel = message.get("channel")
@@ -173,10 +177,16 @@ class KrakenWebSocketAPI:
                 if method == "subscribe":
                     response = SubscriptionResponse(message)
                     self.available_channels.add(response.channel)
+                    symbol = response.result.get("symbol")
+                    label = f"'{channel}' {symbol}" if symbol else f"'{channel}'"
+                    self.log(f"Subscribed to {label}", "info")
 
                 if method == "unsubscribe":
                     response = UnsubscribeResponse(message)
                     self.available_channels.discard(response.channel)
+                    symbol = response.result.get("symbol")
+                    label = f"'{channel}' {symbol}" if symbol else f"'{channel}'"
+                    self.log(f"Unsubscribed from {label}", "info")
 
                 if message_type == "snapshot":
                     match channel:
@@ -189,7 +199,7 @@ class KrakenWebSocketAPI:
                         case "ticker":
                             response = TickerSnapshotResponse(message)
                         case "trade":
-                            response = TradesSnapshotResponse
+                            response = TradesSnapshotResponse(message)
                         case "ohlc":
                             response = OHLCSnapshotResponse(message)
 
@@ -214,15 +224,36 @@ class KrakenWebSocketAPI:
                     await func(response)
 
             except Exception as e:
-                print(f"Error processing message in queue: {e}")
+                self.log(f"Error processing message in queue: {e}", "error")
             finally:
                 self._message_queue.task_done()
+
+    async def _process_commands(self):
+        """
+        Drains the command queue and routes each outbound request to the correct
+        websocket connection. Public requests go to websocket_public, private requests
+        go to websocket_private. Commands are enqueued by control server route handlers.
+        """
+        while True:
+            command = await self.command_queue.get()
+            try:
+                if isinstance(command, (SubscriptionRequest, UnsubscribeRequest)):
+                    if command.public and self.websocket_public:
+                        await self.websocket_public.send(command.serialize())
+                    elif not command.public and self.websocket_private:
+                        await self.websocket_private.send(command.serialize())
+                    else:
+                        self.log("Cannot send command: target websocket is not connected.", "warning")
+            except Exception as e:
+                self.log(f"Error sending command: {e}", "error")
+            finally:
+                self.command_queue.task_done()
 
     async def _create_public_websocket(self) -> None:
         try:
             self.websocket_public = await websockets.connect(KRAKEN_WSS_PUBLIC_URI)
         except websockets.exceptions.ConnectionClosed:
-            print("Lost connection to public websocket. Retrying in 5 seconds...")
+            self.log("Lost connection to public websocket. Retrying in 5 seconds...", "warning")
             asyncio.sleep(5)
             self._create_public_websocket()
 
@@ -230,14 +261,17 @@ class KrakenWebSocketAPI:
         try:
             self.websocket_private = await websockets.connect(KRAKEN_WSS_AUTH_URI)
         except websockets.exceptions.ConnectionClosed:
-            print("Lost connection to private websocket. Retrying in 5 seconds...")
+            self.log("Lost connection to private websocket. Retrying in 5 seconds...", "warning")
             asyncio.sleep(5)
             self._create_private_websocket()
 
     def log(self, log: str, priority: str) -> None:
         """Uses decorated log hander for logging, otherwise defaults to root logger."""
         if self._user_log_handler:
-            self._user_log_handler(log)
+            try:
+                asyncio.create_task(self._user_log_handler(log, priority))
+            except RuntimeError:
+                pass
         else:
             match priority:
                 case "debug":
@@ -266,15 +300,16 @@ class KrakenWebSocketAPI:
     def user_logger(self, func: Callable) -> Callable:
         """
         A decorator to register a function as a log hander so user can output logs
-        using their own logging system
+        using their own logging system.
 
         Returns:
-            func (function): Runs the decorated function and passes the log string
-                to the wrapped function.
+            func (function): Runs the decorated function and passes two parameters
+                through. The first arg is the log string, and the second arg is the
+                priority of the log.
         """
         if not asyncio.iscoroutinefunction(func):
             raise TypeError("User log handler must be coroutine.")
-        self._log_handler = func
+        self._user_log_handler = func
         return func
 
     def user_message_handler(self, func: Callable) -> Callable:
@@ -313,23 +348,29 @@ class KrakenWebSocketAPI:
 
         for sub_msg in message:
             if not isinstance(sub_msg, SubscriptionRequest):
-                print("Invalid subscription schema used. Utilize the schema classes found in module per endpoint.")
+                self.log("Invalid subscription schema used. Utilize the schema classes found in module per endpoint.", "warning")
             if sub_msg.public:
                 await self.websocket_public.send(json.dumps(sub_msg))
             elif not sub_msg.public:
                 await self.websocket_private.send(json.dumps(sub_msg))
 
-    async def run(self, subscriptions: List[SubscriptionRequest] = []):
+    async def run(
+        self,
+        subscriptions: List[SubscriptionRequest] = [],
+        controls: bool = False,
+        host: str = "127.0.0.1",
+        port: int = 8000
+        ):
         """Connects to the websockets, subscribes to channels, and starts the message handling loop."""
 
         if not self._user_log_handler:
-            self.log("No user log handler registered. Use @<instance>.user_logger to register custom log hander. Defaulting to backup logs", "warning")
-
-        if not self._user_handler:
-            self.log("No handler registered. Use @<instance>.message_handler to register custom handler.", "warning")
+            self.log("No user log handler registered. Use @<instance>.user_logger to register custom log hander. Defaulting to backup logs", "info")
 
         if not self._user_tasks:
-            self.log("No user tasks registered. Use @<instance>.user_task to register a task to run in the async loop.", "warning")
+            self.log("No user tasks registered. Use @<instance>.user_task to register a task to run in the async loop.", "info")
+
+        if not self._user_handler:
+            self.log("No handler registered. Use @<instance>.message_handler to register custom handler. Responses will not be processed.", "error")  
 
         tasks = []
 
@@ -337,7 +378,7 @@ class KrakenWebSocketAPI:
         private_subscriptions = [sub_msg for sub_msg in subscriptions if not sub_msg.public]
 
         # Connect to public endpoint if needed
-        if public_subscriptions:
+        if public_subscriptions or controls:
             await self._create_public_websocket()
 
             # Send subscription messages
@@ -352,6 +393,7 @@ class KrakenWebSocketAPI:
             kraken_auth = KrakenAuth()
             if not kraken_auth.token:
                 raise ValueError("Cannot subscribe to private channels. KRAKEN_REST_API keys are missing or invalid.")
+            self._token = kraken_auth.token
             await self._create_private_websocket()
 
             # Add the token to each private subscription message and send subscription messages
@@ -367,8 +409,16 @@ class KrakenWebSocketAPI:
             tasks.append(asyncio.create_task(task))
 
         # Start the central message processor
-        processing_task = asyncio.create_task(self._process_messages())
-        tasks.append(processing_task)
+        tasks.append(asyncio.create_task(self._process_messages()))
 
-        print("Kraken WebSocket client running. Press Ctrl+C to stop.")
+        # Start the command queue processor
+        tasks.append(asyncio.create_task(self._process_commands()))
+
+        # Optionally start the local control server
+        if controls:
+            control_server = ControlServer(self, host=host, port=port)
+            tasks.append(asyncio.create_task(control_server.serve()))
+            self.log(f"Control server running at http://{host}:{port}", "info")
+
+        self.log("Kraken WebSocket client running. Press Ctrl+C to stop.", "info")
         await asyncio.gather(*tasks)
