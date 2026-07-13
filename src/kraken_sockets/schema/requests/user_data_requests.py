@@ -31,15 +31,15 @@ class BalancesSubscriptionRequest(SubscriptionRequest):
         req_id = None
     ):
         super().__init__()
-        self.public = False,
-        self.method = "subscribe",
+        self.public = False
+        self.method = "subscribe"
         self.params = {
             "channel": "balances",
             "snapshot": snapshot,
-        },
-        self.req_id = req_id,
-        self.rebased = rebased,
-        self.users = users       
+        }
+        self.req_id = req_id
+        self.rebased = rebased
+        self.users = users
 
 
 class ExecutionSubscriptionRequest(SubscriptionRequest):
@@ -82,7 +82,7 @@ class ExecutionSubscriptionRequest(SubscriptionRequest):
             ):
         super().__init__()
         self.public = False
-        self.method = "subscribe",
+        self.method = "subscribe"
         self.params = {
             "channel": "executions",
             "snap_trades": snap_trades,

@@ -195,7 +195,6 @@ def build_router(kraken) -> APIRouter:
     @market_data.post("/subscribe/orders")
     async def subscribe_orders(body: OrdersSubscribeBody):
         req = OrdersSubscriptionRequest(body.symbol, body.depth, body.snapshot, body.req_id)
-        req.params["token"] = kraken._token
         await kraken.command_queue.put(req)
         return {"status": "queued", "channel": "level3", "symbol": body.symbol}
 
@@ -268,14 +267,12 @@ def build_router(kraken) -> APIRouter:
             body.users,
             body.req_id,
         )
-        req.params["token"] = kraken._token
         await kraken.command_queue.put(req)
         return {"status": "queued", "channel": "executions"}
 
     @user_data.post("/subscribe/balances")
     async def subscribe_balances(body: BalancesSubscribeBody):
         req = BalancesSubscriptionRequest(body.snapshot, body.rebased, body.users, body.req_id)
-        req.params["token"] = kraken._token
         await kraken.command_queue.put(req)
         return {"status": "queued", "channel": "balances"}
 

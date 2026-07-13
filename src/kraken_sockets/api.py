@@ -136,6 +136,7 @@ class KrakenWebSocketAPI:
         self._user_tasks: List[Callable] = []
         self.websocket_public: websockets.ClientConnection | None = None
         self.websocket_private: websockets.ClientConnection | None = None
+        self._private_listener_task: asyncio.Task | None = None
 
     async def _listen(self, socket: websockets.ClientConnection, name: str):
         """Generic listener loop for a websocket connection."""
@@ -238,12 +239,17 @@ class KrakenWebSocketAPI:
             command = await self.command_queue.get()
             try:
                 if isinstance(command, (SubscriptionRequest, UnsubscribeRequest)):
-                    if command.public and self.websocket_public:
-                        await self.websocket_public.send(command.serialize())
-                    elif not command.public and self.websocket_private:
-                        await self.websocket_private.send(command.serialize())
+                    if command.public:
+                        if self.websocket_public:
+                            await self.websocket_public.send(command.serialize())
+                        else:
+                            self.log("Cannot send command: public websocket is not connected.", "warning")
                     else:
-                        self.log("Cannot send command: target websocket is not connected.", "warning")
+                        if await self._ensure_private_connection():
+                            command.params["token"] = self._token
+                            await self.websocket_private.send(command.serialize())
+                        else:
+                            self.log("Cannot send private command: KRAKEN_REST_API keys are missing or invalid.", "warning")
             except Exception as e:
                 self.log(f"Error sending command: {e}", "error")
             finally:
@@ -264,6 +270,24 @@ class KrakenWebSocketAPI:
             self.log("Lost connection to private websocket. Retrying in 5 seconds...", "warning")
             asyncio.sleep(5)
             self._create_private_websocket()
+
+    async def _ensure_private_connection(self) -> bool:
+        """
+        Authenticates and connects the private websocket on demand, starting its
+        listener task. Allows private commands to arrive at runtime (e.g. via the
+        control server) even when run() started with no private subscriptions.
+        Returns False if API keys are missing or invalid.
+        """
+        if self.websocket_private:
+            return True
+        if not self._token:
+            kraken_auth = KrakenAuth()
+            if not kraken_auth.token:
+                return False
+            self._token = kraken_auth.token
+        await self._create_private_websocket()
+        self._private_listener_task = asyncio.create_task(self._listen(self.websocket_private, "private"))
+        return True
 
     def log(self, log: str, priority: str) -> None:
         """Uses decorated log hander for logging, otherwise defaults to root logger."""
@@ -390,19 +414,16 @@ class KrakenWebSocketAPI:
 
         # Connect to private endpoint if needed
         if private_subscriptions:
-            kraken_auth = KrakenAuth()
-            if not kraken_auth.token:
+            if not await self._ensure_private_connection():
                 raise ValueError("Cannot subscribe to private channels. KRAKEN_REST_API keys are missing or invalid.")
-            self._token = kraken_auth.token
-            await self._create_private_websocket()
 
             # Add the token to each private subscription message and send subscription messages
             for sub_msg in private_subscriptions:
-                sub_msg.params["token"] = kraken_auth.token
+                sub_msg.params["token"] = self._token
                 await self.websocket_private.send(sub_msg.serialize())
 
-            # Create our private websocket listener
-            tasks.append(asyncio.create_task(self._listen(self.websocket_private, "private")))
+            # Private websocket listener task is created by _ensure_private_connection
+            tasks.append(self._private_listener_task)
 
         # Add in user tasks from decorators
         for task in self._user_tasks:

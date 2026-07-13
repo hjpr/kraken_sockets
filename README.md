@@ -205,6 +205,95 @@ Wrap a function in decorators so that it will be registered in the async loop an
 
 - Add function as a custom task to the async loop. These tasks will be run with each loop. Control the execution using your own logic.
 
+---
+
+## Control API
+
+Run the client with an optional local REST API to manage subscriptions at runtime — no restart required. This is the intended integration point for agentic trading: keep the websocket loop always on with your triggers registered, and let an LLM agent (or any HTTP client) subscribe, unsubscribe, and check status by calling local endpoints.
+
+#### Enabling
+
+Pass `controls=True` to `run()`. The server runs inside the same asyncio loop as the websocket listeners, and the public websocket connects even with no initial subscriptions.
+
+```python
+import asyncio
+from kraken_sockets.api import KrakenWebSocketAPI
+
+async def main():
+    kraken = KrakenWebSocketAPI()
+
+    # Register triggers for the channels your agent may subscribe to
+    from kraken_sockets.schema.responses import TickerUpdateResponse
+
+    @kraken.trigger(TickerUpdateResponse)
+    async def ticker_handler(response: TickerUpdateResponse) -> None:
+        kraken.log(f"Last price {response.symbol}: ${response.last}", "info")
+
+    # Start with no subscriptions — the agent adds them over HTTP at runtime
+    await kraken.run(controls=True, host="127.0.0.1", port=8000)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Interactive OpenAPI docs are served at `http://127.0.0.1:8000/docs` — useful for exploring request bodies, and the schema can be handed directly to an agent as its tool definition.
+
+#### Endpoints
+
+**Admin**
+
+| Method | Path      | Body example             | Description                                    |
+| ------ | --------- | ------------------------ | ---------------------------------------------- |
+| GET    | `/status` | —                        | List currently active channel subscriptions   |
+| POST   | `/ping`   | `{"target": "public"}`   | Ping the public or private websocket          |
+
+**Market Data**
+
+| Method | Path                      | Body example                                |
+| ------ | ------------------------- | ------------------------------------------- |
+| POST   | `/subscribe/ticker`       | `{"symbol": ["BTC/USD"]}`                   |
+| POST   | `/subscribe/book`         | `{"symbol": ["BTC/USD"], "depth": 10}`      |
+| POST   | `/subscribe/ohlc`         | `{"symbol": ["BTC/USD"], "interval": 1}`    |
+| POST   | `/subscribe/trades`       | `{"symbol": ["BTC/USD"]}`                   |
+| POST   | `/subscribe/instrument`   | `{}`                                        |
+| POST   | `/subscribe/orders`       | `{"symbol": ["BTC/USD"], "depth": 10}`      |
+
+Each channel has a matching `/unsubscribe/...` endpoint taking the same identifying fields (e.g. `POST /unsubscribe/ticker` with `{"symbol": ["BTC/USD"]}`).
+
+**User Data**
+
+| Method | Path                      | Body example |
+| ------ | ------------------------- | ------------ |
+| POST   | `/subscribe/executions`   | `{}`         |
+| POST   | `/subscribe/balances`     | `{}`         |
+| POST   | `/unsubscribe/executions` | `{}`         |
+| POST   | `/unsubscribe/balances`   | `{}`         |
+
+#### Example
+
+```bash
+# Subscribe to a ticker channel
+curl -X POST http://127.0.0.1:8000/subscribe/ticker \
+     -H "Content-Type: application/json" \
+     -d '{"symbol": ["BTC/USD"]}'
+
+# Check which channels are active
+curl http://127.0.0.1:8000/status
+
+# Unsubscribe when done
+curl -X POST http://127.0.0.1:8000/unsubscribe/ticker \
+     -H "Content-Type: application/json" \
+     -d '{"symbol": ["BTC/USD"]}'
+```
+
+#### Notes
+
+- Endpoint responses return `{"status": "queued"}` — the command has been placed on the outbound queue, not yet confirmed by Kraken. Confirmation arrives over the websocket as a `SubscriptionResponse` / `UnsubscribeResponse` and fires any trigger you registered for it. Your agent should treat the websocket stream, not the HTTP response, as the source of truth.
+- The server binds to `127.0.0.1` by default and has no authentication. Keep it local; do not expose it to a network.
+- User Data endpoints (`executions`, `balances`) and `orders` require authentication. The first private command automatically fetches a session token and connects the private websocket — no private subscription is needed at startup, only the `KRAKEN_REST_API_*` environment variables.
+
+---
+
 ## Private Endpoints
 
 For authenticated endpoints, set environment variables:

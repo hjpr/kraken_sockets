@@ -150,6 +150,11 @@ dependencies = [
     { name = "websockets" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "kraken-sockets" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
@@ -159,6 +164,9 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.34.0" },
     { name = "websockets", specifier = ">=15.0.1" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "kraken-sockets", virtual = "." }]
 
 [[package]]
 name = "loguru"
