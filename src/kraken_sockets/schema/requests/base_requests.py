@@ -34,6 +34,37 @@ class SubscriptionRequest:
         return json.dumps(message_body)
 
 
+class TradingRequest:
+    """
+    Base structure for trading messages (add_order, cancel_order, etc.). Trading
+    requests are always sent on the authenticated websocket, so 'public' is False.
+    The session token is injected by the command processor just before sending.
+    Optionally 'req_id' can be given with any trading request as a request identifier.
+
+    Provides the serialize() method as well which automatically drops parameters
+    containing None values, and converts to a JSON string for proper request formatting.
+    """
+    public: bool
+    method: str
+    params: dict
+    req_id: Optional[int]
+
+    def __init__(self):
+        self.public = False
+        self.method = ""
+        self.params = {}
+        self.req_id = None
+
+    def serialize(self) -> str:
+        message_body = {
+            "method": self.method,
+            "params": self.params,
+            "req_id": self.req_id
+        }
+        message_body = {k: v for k, v in message_body.items() if v is not None}
+        return json.dumps(message_body)
+
+
 class UnsubscribeRequest:
     """
     Base structure for unsubscribe message. Contains attributes common to all

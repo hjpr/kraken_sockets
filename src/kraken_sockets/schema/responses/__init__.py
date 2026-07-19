@@ -16,4 +16,20 @@ from .market_data_responses import (
     TradesUpdateResponse
 )
 from .subscription_responses import SubscriptionResponse, UnsubscribeResponse
-from .user_data_responses import ExecutionsSnapshotResponse, ExecutionsUpdateResponse
+from .trading_responses import (
+    AddOrderResponse,
+    AmendOrderResponse,
+    BatchAddResponse,
+    BatchCancelResponse,
+    CancelAllOrdersAfterResponse,
+    CancelAllResponse,
+    CancelOrderResponse,
+    EditOrderResponse,
+    TradingResponse,
+)
+from .user_data_responses import (
+    BalancesSnapshotResponse,
+    BalancesUpdateResponse,
+    ExecutionsSnapshotResponse,
+    ExecutionsUpdateResponse,
+)

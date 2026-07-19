@@ -1,6 +1,6 @@
 
 from .admin_requests import PingRequest
-from .base_requests import SubscriptionRequest, UnsubscribeRequest
+from .base_requests import SubscriptionRequest, TradingRequest, UnsubscribeRequest
 from .market_data_requests import (
     BookSubscriptionRequest,
     BookUnsubscribeRequest,
@@ -14,6 +14,16 @@ from .market_data_requests import (
     TickerUnsubscribeRequest,
     TradesSubscriptionRequest,
     TradesUnsubscribeRequest,
+)
+from .trading_requests import (
+    AddOrderRequest,
+    AmendOrderRequest,
+    BatchAddRequest,
+    BatchCancelRequest,
+    CancelAllOrdersAfterRequest,
+    CancelAllRequest,
+    CancelOrderRequest,
+    EditOrderRequest,
 )
 from .user_data_requests import (
     BalancesSubscriptionRequest,

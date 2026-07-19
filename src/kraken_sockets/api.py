@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from typing import Callable, Dict, List
 
+from kraken_sockets.analytics import IndicatorEngine
 from kraken_sockets.controls import ControlServer
 from kraken_sockets.schema.requests import (
     BalancesSubscriptionRequest,
@@ -24,6 +25,7 @@ from kraken_sockets.schema.requests import (
     OrdersSubscriptionRequest,
     PingRequest,
     SubscriptionRequest,
+    TradingRequest,
     UnsubscribeRequest,
 )
 from kraken_sockets.schema.responses import (
@@ -33,6 +35,16 @@ from kraken_sockets.schema.responses import (
     HeartbeatResponse,
     PingResponse,
     StatusResponse,
+
+    # Trading responses
+    AddOrderResponse,
+    AmendOrderResponse,
+    BatchAddResponse,
+    BatchCancelResponse,
+    CancelAllOrdersAfterResponse,
+    CancelAllResponse,
+    CancelOrderResponse,
+    EditOrderResponse,
 
     # Snapshot responses
     BookSnapshotResponse,
@@ -52,7 +64,13 @@ from kraken_sockets.schema.responses import (
     OHLCUpdateResponse,
     OrderUpdateResponse,
     TickerUpdateResponse,
-    TradesUpdateResponse
+    TradesUpdateResponse,
+
+    # User data responses
+    BalancesSnapshotResponse,
+    BalancesUpdateResponse,
+    ExecutionsSnapshotResponse,
+    ExecutionsUpdateResponse
 )
 
 load_dotenv()
@@ -137,6 +155,8 @@ class KrakenWebSocketAPI:
         self.websocket_public: websockets.ClientConnection | None = None
         self.websocket_private: websockets.ClientConnection | None = None
         self._private_listener_task: asyncio.Task | None = None
+        self._observers: List[Callable] = []
+        self.analytics: IndicatorEngine | None = None
 
     async def _listen(self, socket: websockets.ClientConnection, name: str):
         """Generic listener loop for a websocket connection."""
@@ -164,6 +184,7 @@ class KrakenWebSocketAPI:
             else:
                 channel = message.get("channel")
             message_type = message.get("type")
+            response = None
 
             try:
                 if channel == "status":
@@ -177,17 +198,47 @@ class KrakenWebSocketAPI:
 
                 if method == "subscribe":
                     response = SubscriptionResponse(message)
-                    self.available_channels.add(response.channel)
                     symbol = response.result.get("symbol")
-                    label = f"'{channel}' {symbol}" if symbol else f"'{channel}'"
-                    self.log(f"Subscribed to {label}", "info")
+                    label = f"'{response.channel}' {symbol}" if symbol else f"'{response.channel}'"
+                    if response.success:
+                        self.available_channels.add(response.channel)
+                        self.log(f"Subscribed to {label}", "info")
+                    else:
+                        self.log(f"Subscribe request rejected: {response.error}", "warning")
+
+                if method in ("add_order", "amend_order", "edit_order", "cancel_order",
+                              "cancel_all", "cancel_all_orders_after", "batch_add", "batch_cancel"):
+                    match method:
+                        case "add_order":
+                            response = AddOrderResponse(message)
+                        case "amend_order":
+                            response = AmendOrderResponse(message)
+                        case "edit_order":
+                            response = EditOrderResponse(message)
+                        case "cancel_order":
+                            response = CancelOrderResponse(message)
+                        case "cancel_all":
+                            response = CancelAllResponse(message)
+                        case "cancel_all_orders_after":
+                            response = CancelAllOrdersAfterResponse(message)
+                        case "batch_add":
+                            response = BatchAddResponse(message)
+                        case "batch_cancel":
+                            response = BatchCancelResponse(message)
+                    if response.success:
+                        self.log(f"'{method}' acknowledged by engine.", "info")
+                    else:
+                        self.log(f"'{method}' rejected by engine: {response.error}", "warning")
 
                 if method == "unsubscribe":
                     response = UnsubscribeResponse(message)
-                    self.available_channels.discard(response.channel)
                     symbol = response.result.get("symbol")
-                    label = f"'{channel}' {symbol}" if symbol else f"'{channel}'"
-                    self.log(f"Unsubscribed from {label}", "info")
+                    label = f"'{response.channel}' {symbol}" if symbol else f"'{response.channel}'"
+                    if response.success:
+                        self.available_channels.discard(response.channel)
+                        self.log(f"Unsubscribed from {label}", "info")
+                    else:
+                        self.log(f"Unsubscribe request rejected: {response.error}", "warning")
 
                 if message_type == "snapshot":
                     match channel:
@@ -203,6 +254,10 @@ class KrakenWebSocketAPI:
                             response = TradesSnapshotResponse(message)
                         case "ohlc":
                             response = OHLCSnapshotResponse(message)
+                        case "executions":
+                            response = ExecutionsSnapshotResponse(message)
+                        case "balances":
+                            response = BalancesSnapshotResponse(message)
 
                 if message_type == "update":
                     match channel:
@@ -218,11 +273,31 @@ class KrakenWebSocketAPI:
                             response = TradesUpdateResponse(message)
                         case "ohlc":
                             response = OHLCUpdateResponse(message)
+                        case "executions":
+                            response = ExecutionsUpdateResponse(message)
+                        case "balances":
+                            response = BalancesUpdateResponse(message)
                             
-                response_type = type(response)
-                if response_type in self._user_triggers:
-                    func = self._user_triggers[response_type]
-                    await func(response)
+                # Internal observers (e.g. the analytics engine) see every parsed response.
+                # Isolated per-observer so one failure can't stall the stream.
+                if response is not None:
+                    for observer in self._observers:
+                        try:
+                            await observer(response)
+                        except Exception as e:
+                            name = getattr(observer, "__qualname__", repr(observer))
+                            self.log(f"Error in observer {name}: {e}", "error")
+
+                # Catch-all handler sees every message, parsed or not
+                if self._user_handler:
+                    await self._user_handler(message, response)
+
+                # Fire the most specific registered trigger for this response type
+                if response is not None:
+                    for response_class in type(response).__mro__:
+                        if response_class in self._user_triggers:
+                            await self._user_triggers[response_class](response)
+                            break
 
             except Exception as e:
                 self.log(f"Error processing message in queue: {e}", "error")
@@ -250,6 +325,12 @@ class KrakenWebSocketAPI:
                             await self.websocket_private.send(command.serialize())
                         else:
                             self.log("Cannot send private command: KRAKEN_REST_API keys are missing or invalid.", "warning")
+                elif isinstance(command, TradingRequest):
+                    if await self._ensure_private_connection():
+                        command.params["token"] = self._token
+                        await self.websocket_private.send(command.serialize())
+                    else:
+                        self.log("Cannot send trading command: KRAKEN_REST_API keys are missing or invalid.", "warning")
             except Exception as e:
                 self.log(f"Error sending command: {e}", "error")
             finally:
@@ -258,18 +339,18 @@ class KrakenWebSocketAPI:
     async def _create_public_websocket(self) -> None:
         try:
             self.websocket_public = await websockets.connect(KRAKEN_WSS_PUBLIC_URI)
-        except websockets.exceptions.ConnectionClosed:
-            self.log("Lost connection to public websocket. Retrying in 5 seconds...", "warning")
-            asyncio.sleep(5)
-            self._create_public_websocket()
+        except (OSError, websockets.exceptions.WebSocketException):
+            self.log("Failed to connect to public websocket. Retrying in 5 seconds...", "warning")
+            await asyncio.sleep(5)
+            await self._create_public_websocket()
 
     async def _create_private_websocket(self) -> None:
         try:
             self.websocket_private = await websockets.connect(KRAKEN_WSS_AUTH_URI)
-        except websockets.exceptions.ConnectionClosed:
-            self.log("Lost connection to private websocket. Retrying in 5 seconds...", "warning")
-            asyncio.sleep(5)
-            self._create_private_websocket()
+        except (OSError, websockets.exceptions.WebSocketException):
+            self.log("Failed to connect to private websocket. Retrying in 5 seconds...", "warning")
+            await asyncio.sleep(5)
+            await self._create_private_websocket()
 
     async def _ensure_private_connection(self) -> bool:
         """
@@ -309,16 +390,32 @@ class KrakenWebSocketAPI:
                 case "critical":
                     logger.critical(log)
 
-    def trigger(self, trigger: Response) -> Callable:
+    def trigger(self, trigger: type[Response]) -> Callable:
+        """
+        A decorator to register an asynchronous function to run each time a specific
+        response type is received, e.g. @kraken.trigger(TickerUpdateResponse).
+
+        Dispatch is subclass-aware: a trigger registered on a base class such as
+        TradingResponse fires for any of its subclasses. When both a specific and a
+        base class trigger match, only the most specific one runs. One function can
+        be registered per response type.
+
+        Subscription acks share a single class across channels — register on
+        SubscriptionResponse and filter with response.channel inside the function.
+
+        Returns:
+            func (function): The decorated coroutine, unchanged. It is called with
+                the parsed response instance as its only argument.
+        """
         if not inspect.isclass(trigger) or not issubclass(trigger, Response):
             raise ValueError("Trigger doesn't match a known Response schema.")
         def decorator(func) -> Callable:
             if not asyncio.iscoroutinefunction(func):
                 raise TypeError("Triggers must be coroutines.")
-            if trigger not in self._user_triggers:
-                self._user_triggers[trigger] = func
-            else:
+            if trigger in self._user_triggers:
                 raise ValueError("Can't register two functions for one trigger.")
+            self._user_triggers[trigger] = func
+            return func
         return decorator
 
     def user_logger(self, func: Callable) -> Callable:
@@ -336,17 +433,30 @@ class KrakenWebSocketAPI:
         self._user_log_handler = func
         return func
 
+    def add_observer(self, coro: Callable) -> None:
+        """
+        Registers an internal observer coroutine called with every parsed response,
+        before user triggers fire. Used by components like the IndicatorEngine so
+        they never occupy user trigger slots. Multiple observers are allowed.
+        """
+        if not asyncio.iscoroutinefunction(coro):
+            raise TypeError("Observers must be coroutines.")
+        if coro not in self._observers:
+            self._observers.append(coro)
+
     def user_message_handler(self, func: Callable) -> Callable:
         """
-        A decorator to register an asynchronous function as the message handler.
-        
-        The decorated function will be called with each message received from
-        the WebSocket connections.
+        A decorator to register an asynchronous function as a catch-all message handler.
+
+        The decorated function is called with every message received from the WebSocket
+        connections, before any trigger fires. Useful for recording the full stream,
+        e.g. persisting messages for historical analysis.
 
         Returns:
             func (function): Runs the decorated function and passes two arguments
-                through. The first arg is the string parsed into a dict, and the second
-                arg is a schema-formatted response class.
+                through. The first arg is the raw message parsed into a dict, and the
+                second arg is the schema-formatted response instance, or None if the
+                message did not match a known schema.
         """
         if not asyncio.iscoroutinefunction(func):
             raise TypeError("User message handler must be coroutine.")
@@ -355,17 +465,32 @@ class KrakenWebSocketAPI:
         self._user_handler = func
         return func
     
-    def user_task(self, func: Callable) -> None:
+    def user_task(self, func: Callable) -> Callable:
         """
-        A decorator to register a user function into the async loop.
+        A decorator to register a user coroutine into the async loop.
 
-        The decorated function will ent
+        The decorated function is started once as a task when run() is called,
+        alongside the websocket listeners. Use it for long-running or periodic work
+        such as computing rolling indicators — manage your own loop and sleep
+        interval inside the function.
         """
         if not asyncio.iscoroutinefunction(func):
             raise TypeError("User task must be coroutine.")
         if func not in self._user_tasks:
             self._user_tasks.append(func)
-            self.log(f"Registered {func.__name__} into async loop.")
+            self.log(f"Registered {func.__name__} into async loop.", "info")
+        return func
+
+    async def trade(self, request: TradingRequest) -> None:
+        """
+        Enqueues a trading request (AddOrderRequest, CancelOrderRequest, etc.) for
+        sending on the private websocket. The session token is injected automatically
+        and the engine acknowledgement fires any matching registered trigger.
+        """
+        if not isinstance(request, TradingRequest):
+            self.log("Invalid trading schema used. Utilize the trading request classes found in module.", "warning")
+            return
+        await self.command_queue.put(request)
 
     async def subscribe(self, message: List[SubscriptionRequest]) -> None:
         """Sends subscription messages to both public and private endpoints. Use proper schema to ensure proper routing."""
@@ -394,7 +519,7 @@ class KrakenWebSocketAPI:
             self.log("No user tasks registered. Use @<instance>.user_task to register a task to run in the async loop.", "info")
 
         if not self._user_handler:
-            self.log("No handler registered. Use @<instance>.message_handler to register custom handler. Responses will not be processed.", "error")  
+            self.log("No catch-all handler registered. Use @<instance>.user_message_handler to observe every message (optional when using triggers).", "info")
 
         tasks = []
 
@@ -427,7 +552,7 @@ class KrakenWebSocketAPI:
 
         # Add in user tasks from decorators
         for task in self._user_tasks:
-            tasks.append(asyncio.create_task(task))
+            tasks.append(asyncio.create_task(task()))
 
         # Start the central message processor
         tasks.append(asyncio.create_task(self._process_messages()))
@@ -435,8 +560,11 @@ class KrakenWebSocketAPI:
         # Start the command queue processor
         tasks.append(asyncio.create_task(self._process_commands()))
 
-        # Optionally start the local control server
+        # Optionally start the local control server with the analytics engine attached.
+        # Pre-build kraken.analytics with custom windows before run() to override defaults.
         if controls:
+            if self.analytics is None:
+                self.analytics = IndicatorEngine(self)
             control_server = ControlServer(self, host=host, port=port)
             tasks.append(asyncio.create_task(control_server.serve()))
             self.log(f"Control server running at http://{host}:{port}", "info")

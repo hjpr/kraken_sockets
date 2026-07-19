@@ -197,6 +197,136 @@ class Execution:
         self.user = data.get("user")
 
 
+@dataclass
+class Wallet:
+    balance: float
+    type: str
+    id: str
+
+
+class BalanceAsset:
+    """
+    Represents a single asset holding within a balances channel snapshot.
+
+    Attr:
+        **asset**: *(str)* asset symbol code e.g. "BTC".
+        **asset_class**: *(str)* asset class, currently always "currency".
+        **balance**: *(float)* total asset amount across all wallet types.
+        **wallets**: *(list)* list of Wallet objects breaking the balance down by
+            wallet type ('spot' or 'earn') and id ('main', 'flex', 'bonded', etc.).
+    """
+    asset: str
+    asset_class: str
+    balance: float
+    wallets: list[Wallet]
+
+    def __init__(self, data: dict) -> None:
+        self.asset = data["asset"]
+        self.asset_class = data.get("asset_class", "currency")
+        self.balance = data["balance"]
+        self.wallets = [
+            Wallet(w.get("balance"), w.get("type"), w.get("id"))
+            for w in data.get("wallets", [])
+        ]
+
+
+class LedgerEntry:
+    """
+    Represents a single account ledger transaction within a balances channel update.
+
+    Attr:
+        **asset**: *(str)* asset symbol code e.g. "BTC".
+        **asset_class**: *(str)* asset class, currently always "currency".
+        **amount**: *(float)* asset change quantity in this event.
+        **balance**: *(float)* total asset held after the transaction.
+        **fee**: *(float)* fee amount for the transaction.
+        **ledger_id**: *(str)* unique account ledger entry identifier.
+        **ref_id**: *(str)* context-specific reference id, e.g. trade id for trades.
+        **timestamp**: *(str)* RFC3339 timestamp of the transaction.
+        **type**: *(str)* broad event category e.g. trade, deposit, withdrawal, transfer.
+        **subtype**: *(str)* specific event subtype e.g. spotfromfutures.
+        **category**: *(str)* event categorization e.g. trade, margin-trade, conversion.
+        **wallet_type**: *(str)* wallet type, 'spot' or 'earn'.
+        **wallet_id**: *(str)* wallet identifier e.g. 'main', 'flex'.
+        **user**: *(str)* Kraken user identifier, present only when users='all' was requested.
+    """
+    asset: str
+    asset_class: str
+    amount: float
+    balance: float
+    fee: Optional[float]
+    ledger_id: str
+    ref_id: Optional[str]
+    timestamp: str
+    type: str
+    subtype: Optional[str]
+    category: Optional[str]
+    wallet_type: Optional[str]
+    wallet_id: Optional[str]
+    user: Optional[str]
+
+    def __init__(self, data: dict) -> None:
+        self.asset = data["asset"]
+        self.asset_class = data.get("asset_class", "currency")
+        self.amount = data["amount"]
+        self.balance = data["balance"]
+        self.fee = data.get("fee")
+        self.ledger_id = data.get("ledger_id", "")
+        self.ref_id = data.get("ref_id")
+        self.timestamp = data.get("timestamp", "")
+        self.type = data.get("type", "")
+        self.subtype = data.get("subtype")
+        self.category = data.get("category")
+        self.wallet_type = data.get("wallet_type")
+        self.wallet_id = data.get("wallet_id")
+        self.user = data.get("user")
+
+
+class BalancesSnapshotResponse(SnapshotResponse):
+    """
+    Snapshot of all asset balances on the account sent after successfully
+    subscribing to the 'balances' channel.
+
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/balances
+
+    Arg:
+        **message**: *(dict)* dict containing response data.
+
+    Attr:
+        **balances**: *(list)* list of BalanceAsset objects, one per asset held,
+            each with a per-wallet breakdown.
+        **sequence**: *(int)* subscription message sequence number used to detect gaps.
+    """
+    balances: list[BalanceAsset]
+    sequence: int
+
+    def __init__(self, message: dict) -> None:
+        self.balances = [BalanceAsset(item) for item in message["data"]]
+        self.sequence = message["sequence"]
+
+
+class BalancesUpdateResponse(UpdateResponse):
+    """
+    Real-time account ledger transactions streamed on the 'balances' channel,
+    e.g. trades settling, deposits, withdrawals, and transfers.
+
+    Docs @ https://docs.kraken.com/api/docs/websocket-v2/balances
+
+    Arg:
+        **message**: *(dict)* dict containing response data.
+
+    Attr:
+        **ledger_entries**: *(list)* list of LedgerEntry objects for this event.
+        **sequence**: *(int)* subscription message sequence number used to detect gaps.
+    """
+    ledger_entries: list[LedgerEntry]
+    sequence: int
+
+    def __init__(self, message: dict) -> None:
+        self.ledger_entries = [LedgerEntry(item) for item in message["data"]]
+        self.sequence = message["sequence"]
+
+
 class ExecutionsSnapshotResponse(SnapshotResponse):
     """
     Snapshot of open orders and recent execution history sent after successfully

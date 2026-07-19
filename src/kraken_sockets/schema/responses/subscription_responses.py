@@ -28,11 +28,11 @@ class SubscriptionResponse(Response):
     req_id: Optional[int]
 
     def __init__(self, message: dict) -> None:
-        self.channel = message["result"]["channel"]
-        self.result = message["result"]
-        self.success = message["success"]
-        self.time_in = message["time_in"]
-        self.time_out = message["time_out"]
+        self.result = message.get("result") or {}
+        self.channel = self.result.get("channel", "")
+        self.success = message.get("success", False)
+        self.time_in = message.get("time_in", "")
+        self.time_out = message.get("time_out", "")
         self.error = message.get("error")
         self.req_id = message.get("req_id")
 
@@ -60,10 +60,10 @@ class UnsubscribeResponse(Response):
     req_id: Optional[int]
 
     def __init__(self, message: dict) -> None:
-        self.channel = message["result"]["channel"]
-        self.result = message["result"]
-        self.success = message["success"]
-        self.time_in = message["time_in"]
-        self.time_out = message["time_out"]
+        self.result = message.get("result") or {}
+        self.channel = self.result.get("channel", "")
+        self.success = message.get("success", False)
+        self.time_in = message.get("time_in", "")
+        self.time_out = message.get("time_out", "")
         self.error = message.get("error")
         self.req_id = message.get("req_id")
